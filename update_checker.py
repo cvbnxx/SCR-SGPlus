@@ -30,7 +30,7 @@ BASEVERSION = re.compile(
 
 UPDATE_SCRIPT_NAME = 'auto-updater.py'
 
-def generate_update_script(url):
+def generate_update_script(binary_url, sig_url):
     logging.debug("generate_update_script: called")
     with open(UPDATE_SCRIPT_NAME, 'w') as update_script:
         update_script.write(f'''
@@ -39,26 +39,50 @@ import shutil
 import subprocess
 import sys
 import time
+import gnupg
 
 from requests import get as requests_get
 
-def download_and_replace(url, filename):
-    time.sleep(2)
+def download_file(url, filename):
     try:
         r = requests_get(url=url, stream=True)
-        print("Latest version downloaded. Please wait while the old version is replaced")
         with open(filename, 'wb') as f:
             shutil.copyfileobj(r.raw, f)
-        print("Update completed successfully.")
     except Exception as e:
         print(f"Download and replace failed: {{e}}")
+    
+def verify_sig(downloaded, signature, public_key):
+    gpg = gnupg.GPG()
+    with open(public_key, 'r') as key_file:
+        public_key_data = key_file.read()
+        gpg.import_keys(public_key_data)
+    with open(signature, 'rb') as sig_file:
+        verified = gpg.verify_file(sig_file, downloaded)
+        return verified
 
-download_url = "{url}"
-download_and_replace(download_url, "sgplus.exe") #Assumes sgplus.exe is the exact file name to be replaced, new version will be downloaded as sgplus.exe regardless but the old version will not be replaced if named something else.
+def download_and_verify(binary, sig, pub, filename):
+    time.sleep(2)
+    download_file(binary, "sgplus-temp.exe")
+    download_file(sig, "sgplus.exe.sig")
+    download_file(pub, "public_key.asc")
+    print("Files downloaded successfully. Verifying files...")
 
-print("Opening new version. Enjoy!\\n\\n\\n")
-subprocess.Popen("sgplus.exe", creationflags = subprocess.CREATE_NEW_PROCESS_GROUP)
+    if verify_sig("sgplus-temp.exe", "sgplus.exe.sig", "public_key.asc"):
+        print("Files verified successfully. Continuing...")
+        os.rename("sgplus-temp.exe", "sgplus.exe")
+        print("Opening new version. Enjoy!\\n\\n\\n")
+        subprocess.Popen("sgplus.exe", creationflags = subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        print("Files could not be verified. Aborting update.")
+        os.remove("sgplus-temp.exe")
 
+download_binary = "{binary_url}"
+download_sig = "{sig_url}"
+public_key = "https://github.com/cvbnxx/SCR-SGPlus/blob/verification/public_key.asc"
+download_and_verify(download_binary, download_sig, public_key, "sgplus.exe") #Assumes sgplus.exe is the exact file name to be replaced, new version will be downloaded as sgplus.exe regardless but the old version will not be replaced if named something else.
+
+os.remove("sgplus.exe.sig")
+os.remove("public_key.asc")
 os.remove(__file__)
 ''')
 
@@ -99,7 +123,7 @@ def coerce(version: str) -> Tuple[Version, Optional[str]]:
 def check_for_updates() -> None:
     logging.debug("update_check: called")
     """Fetch the latest release version from the GitHub repo and inform the user if an update is available"""
-    URL = "https://api.github.com/repos/ElectricityMachine/SCR-SGPlus/releases/latest"
+    URL = "https://api.github.com/repos/cvbnxx/SCR-SGPlus/releases/latest"
     try:
         r = requests_get(url=URL, timeout=10)
         data = r.json()
@@ -114,8 +138,9 @@ def check_for_updates() -> None:
             print(colorama.Fore.WHITE)
 
             ###
-            download_url = data['assets'][0]['browser_download_url'] #Assumes the exe is the first file in Assets
-            generate_update_script(download_url)
+            download_binary_url = data['assets'][0]['browser_download_url'] #Assumes the exe is the first file in Assets
+            download_signature_url = data['assets'][1]['browser_download_url']
+            generate_update_script(download_binary_url, download_signature_url)
             print("Installing update. Please wait...")
             time.sleep(1)
             execute_update_script()
